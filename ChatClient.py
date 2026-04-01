@@ -13,32 +13,25 @@ from socket import *
 import sys
 import struct
 import json # struct and json will help with framing
+import threading
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # NETWORK PROTOCOL: FRAMED MSGS OVER TCP
-# Every message sent across the network has the following structure:
-# 4 bytes: unsigned integer N (big-endian)
-# N bytes: message body (UTF-8 text)
-# • If N is invalid (e.g., N == 0 or N > 65536), the receiver must close the connection.
-# • Your receive code must loop until it reads exactly 4 bytes for N, then loop until it reads
-# exactly N bytes for the body.
 def recv_all(sock,n):
     data = b''
     while len(data)<n:
         chunk = sock.recv(n-len(data))
-        if not chunk:
-            return None
+        if not chunk: return None
         data += chunk
     return data
 
 def recv_msg(sock):
     raw_len = recv_all(sock,4) # gets exactly 4 bytes
-    if not raw_len:
-        return None
+    if not raw_len:return None
     msg_len = struct.unpack('!I',raw_len)[0]
-
+    # If N is invalid (e.g., N == 0 or N > 65536), the receiver must close the connection
     if msg_len == 0 or msg_len>65536: return None
     data = recv_all(sock,msg_len)
     if not data: return None
@@ -49,15 +42,43 @@ def send_msg(sock,msg_dict):
     msg_len = struct.pack('!I',len(data))
     sock.sendall(msg_len+data)
 
+def listen_server(sock): #thread func listens for msgs froms server
+    while 1:
+        try:
+            msg = recv_msg(sock)
+            if msg is None:
+                print("Disconnected from server.")
+                break
+
+            # now handle different types of messages
+            mtype = msg.get("type")
+            if mtype == "deliver":
+                print(f"[{msg['room']}] {msg['from']}: {msg['text']}")
+            elif mtype == "pm":
+                print(f"[PM from {msg['from']}] {msg['text']}")
+            elif mtype == "system":
+                print(f"[SYSTEM] {msg['message']}")
+            elif mtype == "history":
+                print(f"[HISTORY for {msg['room']}]")
+                for m in msg.get("messages", []):
+                    print(f"{m['from']}: {m['text']}")
+            elif mtype == "ok":
+                print(f"[OK] {msg.get('message')}")
+            elif mtype == "error":
+                print(f"[ERROR] {msg.get('message')}")
+            else:
+                print(f"[UNKNOWN MSG] {msg}")
+
+        except Exception as e:
+            print("Error receiving message:", e)
+            break
+
 # accept four command line args:
 #  1) <hostname> or <ip> of your chat server
 #  2) <port> number your server is running on
 #  3) <nickname> (must be unique among currently connected clients)
 #  4) <ClientID> (a unique identifier for this client session)
 #  Example: ChatClient 10.0.0.1 12345 John 001
-#  If the first argument is a hostname, it must resolve to an IP address.
-#  If any arguments are missing or incorrect, exit after printing: ERR - arg x (x is the argument number).
-
 args = sys.argv
 if len(args) != 5:
     print("ERR - arg 1")
@@ -82,7 +103,12 @@ except:
 
 # Create socket and connect to server
 clientSocket = socket(AF_INET, SOCK_STREAM)
-clientSocket.connect((server_ip, port))
+try:
+    clientSocket.connect((server_ip, port))
+except Exception as e:
+    print("Connection failed:",e)
+    sys.exit(1)
+
 
 # print welcome msg
 print(f"ChatClient started with server IP: {server_ip}, port: {port}, nickname: {nickname}, client ID: {clientID}, Date/Time: {now_str()}")
@@ -100,8 +126,32 @@ send_msg(clientSocket,{
 })
 
 # receive server response
-response = recv_msg(clientSocket)
-print("Server response: ",response)
+resp = recv_msg(clientSocket)
+if not resp or resp.get("type") != "ok":
+    print("Registration failed:",resp)
+    sys.exit(1)
+
+print(f"Connected to server. Joined room: {resp.get('room')}")
+if "history" in resp:
+    for m in resp["history"]:
+        print(f"[HISTORY] {m['from']}: {m['text']}")
+
+# start listening thread
+threading.Thread(target=listen_server, args=(clientSocket,), daemon=True).start()
+
+try:
+    while True:
+        msg = input("Enter message: ")
+        send_msg(clientSocket, {"type": "text", "text": msg})
+        # receive messages from server
+        server_msg = recv_msg(clientSocket)
+        if msg.strip() == "":
+            continue # do nothing if empty
+        send_msg(clientSocket,{"type":"text","text":msg})
+except KeyboardInterrupt:
+    print("\nExiting...")
+finally:
+    clientSocket.close()
 
 # SUPPORTED COMMANDS
 # • /join <room> Join (or create) a room. You leave your previous room

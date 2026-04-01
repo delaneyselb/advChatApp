@@ -14,17 +14,183 @@ from socket import *
 import sys
 import struct
 import json # struct and json will help with framing
+import time 
+import threading
+
+clients = {}  
+# nickname -> {
+#   "socket": socket,
+#   "clientID": str,
+#   "room": str,
+#   "last_seen": time
+# }
+
+rooms = {
+    "lobby": {
+        "members": set(),
+        "history": []
+    }
+}
 
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# HANDLE CLIENTS
+# HANDLE CLIENTS
+def handle_client(conn, addr):
+    nickname = None  # define here to ensure finally block works
+    try:
+        # --- Registration ---
+        msg = recv_msg(conn)
+        if not msg or msg.get("type") != "register":
+            conn.close()
+            return
+        nickname = msg["nickname"]
+        clientID = msg["clientID"]
+
+        # check duplicate nickname
+        if nickname in clients:
+            send_msg(conn, {
+                "type": "error",
+                "message": "nickname already in use",
+                "timestamp": now_str()
+            })
+            conn.close()
+            return
+
+        # register client
+        clients[nickname] = {
+            "socket": conn,
+            "clientID": clientID,
+            "room": "lobby",
+            "last_seen": time.time()
+        }
+        rooms["lobby"]["members"].add(nickname)
+
+        # log connection
+        print(f"{now_str()} :: {nickname}: connected. (ClientID={clientID})")
+        print(f"{now_str()} :: {nickname}: joined room lobby.")
+
+        # send ok for registration + lobby history
+        send_msg(conn, {
+            "type": "ok",
+            "message": "registered",
+            "room": "lobby",
+            "history": rooms["lobby"]["history"],
+            "timestamp": now_str()
+        })
+
+        # --- Main loop ---
+        while True:
+            msg = recv_msg(conn)
+            if not msg:
+                break
+            clients[nickname]["last_seen"] = time.time()
+
+            if msg.get("type") != "text":
+                continue
+
+            text = msg.get("text")
+            room = clients[nickname]["room"]
+
+            # --- Command handling ---
+            if text.startswith("/"):
+                parts = text.split()
+                command = parts[0]
+
+                # /join <room>
+                if command == "/join":
+                    if len(parts) != 2:
+                        send_msg(conn, {
+                            "type": "error",
+                            "message": "Usage: /join <room>",
+                            "timestamp": now_str()
+                        })
+                        continue
+                    new_room = parts[1]
+                    old_room = clients[nickname]["room"]
+
+                    # leave old room
+                    rooms[old_room]["members"].discard(nickname)
+
+                    # join new room
+                    if new_room not in rooms:
+                        rooms[new_room] = {"members": set(), "history": []}
+                    rooms[new_room]["members"].add(nickname)
+                    clients[nickname]["room"] = new_room
+
+                    # send confirmation + room history
+                    send_msg(conn, {
+                        "type": "ok",
+                        "message": f"joined {new_room}",
+                        "room": new_room,
+                        "history": rooms[new_room]["history"],
+                        "timestamp": now_str()
+                    })
+                    print(f"{now_str()} :: {nickname}: joined room {new_room}.")
+                    continue
+
+                # other commands can go here (e.g., /list, /leave)
+                send_msg(conn, {
+                    "type": "error",
+                    "message": f"Unknown command {command}",
+                    "timestamp": now_str()
+                })
+                continue
+
+            # --- Regular text message ---
+            sender = nickname
+            clientID = clients[sender]["clientID"]
+            ip, port = addr
+            msg_size = len(text.encode())
+            print(f"Received: IP:{ip}, Port:{port}, Client-Nickname:{sender}, "
+                  f"ClientID:{clientID}, Room:{room}, Date/Time:{now_str()}, Msg-Size:{msg_size}")
+
+            out_msg = {
+                "type": "deliver",
+                "room": room,
+                "from": sender,
+                "text": text,
+                "timestamp": now_str()
+            }
+
+            # append to room history
+            history = rooms[room]["history"]
+            history.append({"from": sender, "text": text, "timestamp": now_str()})
+            if len(history) > 20:  # max 20
+                history.pop(0)
+
+            # send to other members
+            recipients = []
+            for user in rooms[room]["members"]:
+                if user != sender:
+                    try:
+                        send_msg(clients[user]["socket"], out_msg)
+                        recipients.append(user)
+                    except:
+                        pass
+            if recipients:
+                print(f"Delivered(Room={room}): {', '.join(recipients)}")
+            else:
+                print(f"Delivered(Room={room}): (none)")
+
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        # cleanup on disconnect
+        if nickname and nickname in clients:
+            room = clients[nickname]["room"]
+            rooms[room]["members"].discard(nickname)
+            del clients[nickname]
+            print(f"{now_str()} :: {nickname}: disconnected.")
+        conn.close()
 
 # NETWORK PROTOCOL: FRAMED MSGS OVER TCP
 # Every message sent across the network has the following structure:
 # 4 bytes: unsigned integer N (big-endian)
 # N bytes: message body (UTF-8 text)
-# • If N is invalid (e.g., N == 0 or N > 65536), the receiver must close the connection.
-# • Your receive code must loop until it reads exactly 4 bytes for N, then loop until it reads
-# exactly N bytes for the body.
+# loops until it reads exactly 4 bytes for N, then loops until it reads
+# exactly N bytes for the body
 def recv_all(sock,n):
     data = b''
     while len(data)<n:
@@ -39,8 +205,8 @@ def recv_msg(sock):
     if not raw_len:
         return None
     msg_len = struct.unpack('!I',raw_len)[0]
-
-    if msg_len == 0 or msg_len>65536: return None
+    # If N is invalid (e.g., N == 0 or N > 65536), the receiver must close the connection
+    if msg_len == 0 or msg_len>65536: return None 
     data = recv_all(sock,msg_len)
     if not data: return None
     return json.loads(data.decode())
@@ -68,33 +234,22 @@ try:
     welcomeSocket.bind(('', port))
     welcomeSocket.listen(10) # double check this 10 value
 except Exception:
-    # If the server cannot bind/listen on the port (e.g., already in use), print and exit:
-    # ERR - cannot create ChatServer socket using port number <port>
+    # If the server cannot bind/listen on the port (e.g., already in use)
     print(f"ERR - cannot create ChatServer socket using port number {port}")
     sys.exit(1)
 
-#IF SERVER SUCCESSFULLY STARTS, PRINT:
-# ChatServer started with server IP: <ip>, port: <port>, Date/Time:
-# <date/time>
+#IF SERVER SUCCESSFULLY STARTS:
 server_ip = gethostbyname(gethostname())
 print(f"ChatServer started with server IP: {server_ip}, port: {port}, Date/Time: {now_str()}")
 
 # While loop to handle arbitrary sequence of clients making requests
 while 1:
-    # Waits for some client to connect and creates new socket for connection
-    connectionSocket, addr = welcomeSocket.accept()
-    print('Client Connected:',addr)
+    conn, addr = welcomeSocket.accept()
+    thread = threading.Thread(target=handle_client, args=(conn, addr))
+    thread.start()
 
-    msg = recv_msg(connectionSocket)
-    if msg:
-        print("Received message: ",msg)
-        # now echo this back to test msg framing, send msg to client
-        send_msg(connectionSocket,{
-            "type":"system",
-            "message":"Message received",
-            "timestamp":now_str()
-        })
-    connectionSocket.close()
+
+
 
 #FUNCTIONALITY:
 # • Support multiple clients connected at the same time.
