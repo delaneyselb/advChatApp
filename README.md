@@ -17,3 +17,6 @@
 3. Receive thread and display
 4. Input loop and commands
 5. Heartbeat and summary
+
+# How to Run
+## Describe steps here
