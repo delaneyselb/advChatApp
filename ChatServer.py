@@ -1,13 +1,100 @@
-# accept one command line arg: <port>
-# must validate that it is a pos int less than 65536
-# if invalid, exit after printing: ERR - arg 1
+# Delaney Selb; CMSC440 Advanced Chat Application; 4/5/2026
+
+# IMPLEMENTATION PLAN:
+# ChatServer.py:
+# 1. startup and arg validation (DONE)
+# 2. accept one client, framing (DONE)
+# 3. registration and lobby
+# 4. multiple clients and rooms
+# 5. commands and private messages
+# 6. heartbeat timeout
+
+from datetime import datetime
+from socket import *
+import sys
+import struct
+import json # struct and json will help with framing
+
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+# NETWORK PROTOCOL: FRAMED MSGS OVER TCP
+# Every message sent across the network has the following structure:
+# 4 bytes: unsigned integer N (big-endian)
+# N bytes: message body (UTF-8 text)
+# • If N is invalid (e.g., N == 0 or N > 65536), the receiver must close the connection.
+# • Your receive code must loop until it reads exactly 4 bytes for N, then loop until it reads
+# exactly N bytes for the body.
+def recv_all(sock,n):
+    data = b''
+    while len(data)<n:
+        chunk = sock.recv(n-len(data))
+        if not chunk:
+            return None
+        data += chunk
+    return data
+
+def recv_msg(sock):
+    raw_len = recv_all(sock,4) # gets exactly 4 bytes
+    if not raw_len:
+        return None
+    msg_len = struct.unpack('!I',raw_len)[0]
+
+    if msg_len == 0 or msg_len>65536: return None
+    data = recv_all(sock,msg_len)
+    if not data: return None
+    return json.loads(data.decode())
+
+def send_msg(sock,msg_dict):
+    data = json.dumps(msg_dict).encode()
+    msg_len = struct.pack('!I',len(data))
+    sock.sendall(msg_len+data)
+
+# accept only one command line arg: <port>
+args = sys.argv
+if len(args) != 2:
+    print("ERR - arg 1")
+    sys.exit(1)
+try: 
+    port = int(args[1])
+    assert 0<port<65536  # must validate that port is a pos int less than 65536
+except(ValueError,AssertionError): # if invalid, exit after printing: ERR - arg 1
+    print("ERR - arg 1")
+    sys.exit(1)
+
+# Create welcoming socket using the given port
+try:
+    welcomeSocket = socket(AF_INET, SOCK_STREAM)
+    welcomeSocket.bind(('', port))
+    welcomeSocket.listen(10) # double check this 10 value
+except Exception:
+    # If the server cannot bind/listen on the port (e.g., already in use), print and exit:
+    # ERR - cannot create ChatServer socket using port number <port>
+    print(f"ERR - cannot create ChatServer socket using port number {port}")
+    sys.exit(1)
 
 #IF SERVER SUCCESSFULLY STARTS, PRINT:
 # ChatServer started with server IP: <ip>, port: <port>, Date/Time:
 # <date/time>
-#ELSE
-# If the server cannot bind/listen on the port (e.g., already in use), print and exit:
-# ERR - cannot create ChatServer socket using port number <port>
+server_ip = gethostbyname(gethostname())
+print(f"ChatServer started with server IP: {server_ip}, port: {port}, Date/Time: {now_str()}")
+
+# While loop to handle arbitrary sequence of clients making requests
+while 1:
+    # Waits for some client to connect and creates new socket for connection
+    connectionSocket, addr = welcomeSocket.accept()
+    print('Client Connected:',addr)
+
+    msg = recv_msg(connectionSocket)
+    if msg:
+        print("Received message: ",msg)
+        # now echo this back to test msg framing, send msg to client
+        send_msg(connectionSocket,{
+            "type":"system",
+            "message":"Message received",
+            "timestamp":now_str()
+        })
+    connectionSocket.close()
 
 #FUNCTIONALITY:
 # • Support multiple clients connected at the same time.
@@ -21,13 +108,6 @@
 # nickname).
 # • Heartbeat Timeout: disconnect clients that go silent for too long (see Heartbeat section).
 
-# NETWORK PROTOCOL: FRAMED MSGS OVER TCP
-# Every message sent across the network has the following structure:
-# 4 bytes: unsigned integer N (big-endian)
-# N bytes: message body (UTF-8 text)
-# • If N is invalid (e.g., N == 0 or N > 65536), the receiver must close the connection.
-# • Your receive code must loop until it reads exactly 4 bytes for N, then loop until it reads
-# exactly N bytes for the body.
 
 #MSG BODY FORMAT:
 # message body is a structured text record made of named fields
