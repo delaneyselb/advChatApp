@@ -1,4 +1,4 @@
-# Delaney Selb V00989490
+# Delaney Selb
 (README.txt also on repo in order to satisfy project requirements)
 
 # How to Run
