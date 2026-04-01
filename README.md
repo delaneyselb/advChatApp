@@ -1,4 +1,9 @@
+# Delaney Selb V00989490
 (README.txt also on repo in order to satisfy project requirements)
+
+# How to Run
+## Describe steps here
+
 # project description here
 
 # Implementation Plan
@@ -17,6 +22,3 @@
 3. Receive thread and display
 4. Input loop and commands
 5. Heartbeat and summary
-
-# How to Run
-## Describe steps here
