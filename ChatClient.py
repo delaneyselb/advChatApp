@@ -15,6 +15,8 @@ import struct
 import json # struct and json will help with framing
 import threading
 
+running = True # flag for exit detection
+
 def now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -43,11 +45,13 @@ def send_msg(sock,msg_dict):
     sock.sendall(msg_len+data)
 
 def listen_server(sock): #thread func listens for msgs froms server
-    while 1:
+    global running
+    while running:
         try:
             msg = recv_msg(sock)
             if msg is None:
-                print("Disconnected from server.")
+                if running:
+                    print("Disconnected from server.")
                 break
 
             # now handle different types of messages
@@ -70,7 +74,10 @@ def listen_server(sock): #thread func listens for msgs froms server
                 print(f"[UNKNOWN MSG] {msg}")
 
         except Exception as e:
-            print("Error receiving message:", e)
+            if running: 
+                print('Connection lost.')
+            else:
+                print("Error receiving message:", e)
             break
 
 # accept four command line args:
@@ -141,16 +148,14 @@ threading.Thread(target=listen_server, args=(clientSocket,), daemon=True).start(
 
 try:
     while True:
-        msg = input("Enter message: ")
-        send_msg(clientSocket, {"type": "text", "text": msg})
-        # receive messages from server
-        server_msg = recv_msg(clientSocket)
+        msg = input("Enter message: ").strip()
         if msg.strip() == "":
             continue # do nothing if empty
         send_msg(clientSocket,{"type":"text","text":msg})
 except KeyboardInterrupt:
     print("\nExiting...")
 finally:
+    running = False # end threat before closing the socket so no issues
     clientSocket.close()
 
 # SUPPORTED COMMANDS

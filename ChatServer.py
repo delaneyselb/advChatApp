@@ -40,7 +40,7 @@ def now_str():
 def handle_client(conn, addr):
     nickname = None  # define here to ensure finally block works
     try:
-        # --- Registration ---
+        # registration!
         msg = recv_msg(conn)
         if not msg or msg.get("type") != "register":
             conn.close()
@@ -80,7 +80,7 @@ def handle_client(conn, addr):
             "timestamp": now_str()
         })
 
-        # --- Main loop ---
+        # main loop
         while True:
             msg = recv_msg(conn)
             if not msg:
@@ -93,7 +93,7 @@ def handle_client(conn, addr):
             text = msg.get("text")
             room = clients[nickname]["room"]
 
-            # --- Command handling ---
+            # commands
             if text.startswith("/"):
                 parts = text.split()
                 command = parts[0]
@@ -106,7 +106,6 @@ def handle_client(conn, addr):
                             "message": "Usage: /join <room>",
                             "timestamp": now_str()
                         })
-                        continue
                     new_room = parts[1]
                     old_room = clients[nickname]["room"]
 
@@ -128,17 +127,120 @@ def handle_client(conn, addr):
                         "timestamp": now_str()
                     })
                     print(f"{now_str()} :: {nickname}: joined room {new_room}.")
+                elif command == "/leave":
+                    if len(parts) != 1:
+                        send_msg(conn, {
+                            "type": "error",
+                            "message": "Usage: /leave",
+                            "timestamp": now_str()
+                        })
+                    new_room = "lobby"
+                    old_room = clients[nickname]["room"]
+
+                    # leave old room
+                    rooms[old_room]["members"].discard(nickname)
+
+                    # join new room
+                    if new_room not in rooms:
+                        rooms[new_room] = {"members": set(), "history": []}
+                    rooms[new_room]["members"].add(nickname)
+                    clients[nickname]["room"] = new_room
+
+                    # send confirmation + room history
+                    send_msg(conn, {
+                        "type": "ok",
+                        "message": f"joined {new_room}",
+                        "room": new_room,
+                        "history": rooms[new_room]["history"],
+                        "timestamp": now_str()
+                    })
+                    print(f"{now_str()} :: {nickname}: joined room {new_room}.")   
+
+                elif command == "/rooms":
+                    if len(parts) != 1:
+                        send_msg(conn, {
+                            "type": "error",
+                            "message": "Usage: /rooms",
+                            "timestamp": now_str()
+                        })
+                    print("Active Rooms:")
+                    for room in rooms:
+                        if len(rooms[room]["members"]) >= 1:
+                            print(room)
+
+                elif command == "/who":
+                    if len(parts) != 2:
+                        send_msg(conn, {
+                            "type": "error",
+                            "message": "Usage: /who <room>",
+                            "timestamp": now_str()
+                        })
+                    room = parts[1]
+
+                    # search for that room then print all members in it
+                    if room in rooms:
+                        print(f"User(s) currently in {room}:")
+                        for member in rooms[room]["members"]:
+                            print(member)
+                    else: # room DNE
+                        print(f"{room} does not currently exist.")
+
+                    # send confirmation + room history
+                    send_msg(conn, {
+                        "type": "ok",
+                        "message": f"joined {new_room}",
+                        "room": new_room,
+                        "history": rooms[new_room]["history"],
+                        "timestamp": now_str()
+                    })
+                elif command == "/msg":
+                    if len(parts) < 3:
+                        send_msg(conn, {
+                            "type": "error",
+                            "message": "Usage: /msg <nickname> <text>",
+                            "timestamp": now_str()
+                        })
+                    target_user = parts[1]
+                    text = " ".join(parts[2:])
+                    # see if target_user exists in curr client list
+                    if target_user not in clients:
+                        send_msg(conn, {
+                            "type": "error",
+                            "message": f"User {target_user} not found",
+                            "timestamp": now_str()
+                        })
+                    else:
+                        pm_msg = {
+                            "type": "pm",
+                            "from": nickname,
+                            "text": text,
+                            "timestamp": now_str()
+                        }
+
+                        try: 
+                            send_msg(clients[target_user]["socket"], pm_msg)
+
+                            print(f"PrivateDelivered: From:{nickname}, To:{target_user}, "
+                            f"Date/Time:{now_str()}, Msg-Size:{len(text.encode())}")
+
+                        except:
+                            # send msg 
+                            send_msg(conn, {
+                                "type": "error",
+                                "message": f"joined {new_room}Failed to send message to {target_user}",
+                                "timestamp": now_str()
+                            })
+                        continue
+                else:
+                    # other commands can go here (e.g., /list, /leave)
+                    send_msg(conn, {
+                        "type": "error",
+                        "message": f"Unknown command {command}",
+                        "timestamp": now_str()
+                    })
                     continue
 
-                # other commands can go here (e.g., /list, /leave)
-                send_msg(conn, {
-                    "type": "error",
-                    "message": f"Unknown command {command}",
-                    "timestamp": now_str()
-                })
-                continue
-
-            # --- Regular text message ---
+            # reg txt msg
             sender = nickname
             clientID = clients[sender]["clientID"]
             ip, port = addr
@@ -157,7 +259,7 @@ def handle_client(conn, addr):
             # append to room history
             history = rooms[room]["history"]
             history.append({"from": sender, "text": text, "timestamp": now_str()})
-            if len(history) > 20:  # max 20
+            if len(history) > 20:  # max prev 20 msgs in room 
                 history.pop(0)
 
             # send to other members
@@ -167,8 +269,8 @@ def handle_client(conn, addr):
                     try:
                         send_msg(clients[user]["socket"], out_msg)
                         recipients.append(user)
-                    except:
-                        pass
+                    except Exception as e:
+                        print("Error:", e)
             if recipients:
                 print(f"Delivered(Room={room}): {', '.join(recipients)}")
             else:
@@ -243,29 +345,16 @@ server_ip = gethostbyname(gethostname())
 print(f"ChatServer started with server IP: {server_ip}, port: {port}, Date/Time: {now_str()}")
 
 # While loop to handle arbitrary sequence of clients making requests
-while 1:
-    conn, addr = welcomeSocket.accept()
-    thread = threading.Thread(target=handle_client, args=(conn, addr))
-    thread.start()
+try:
+    while 1:
+        conn, addr = welcomeSocket.accept()
+        thread = threading.Thread(target=handle_client, args=(conn, addr))
+        thread.start()
+except KeyboardInterrupt:
+    print("\nExiting...")
 
-
-
-
-#FUNCTIONALITY:
-# • Support multiple clients connected at the same time.
-# • Nickname Management: nicknames must be globally unique across all connected
-# clients; reject duplicates.
-# • Rooms: each connected client is always in exactly one room; new clients start in room
-# “lobby”.
-# • Room History: store the last 20 chat messages per room. When a client joins a room,
-# send that room’s history to that client.
-# • Private Messaging: support “/msg <nickname> <text>” (deliver only to the target
-# nickname).
 # • Heartbeat Timeout: disconnect clients that go silent for too long (see Heartbeat section).
 
-
-#MSG BODY FORMAT:
-# message body is a structured text record made of named fields
 
 # SERVER TO CLIENT MSG FORMATTING:
 # Server acknowledgement after successful registration:
